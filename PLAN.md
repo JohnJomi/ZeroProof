@@ -136,8 +136,11 @@ payload.
 ## Known risks
 
 - `better-sqlite3` is a native module. If no prebuilt binary matches the local
-  Node version, fall back to an in-memory `Map` behind the same `lib/db.ts`
-  interface — a five-minute swap that costs only persistence.
+  Node version, fix the install (match a supported Node version, or rebuild from
+  source) — do **not** substitute an in-memory `Map`. Challenge consumption has
+  to be atomic and durable across processes and workers; process-local state
+  silently reintroduces the replay window the nonce exists to close. If SQLite
+  cannot load, the system should fail loudly rather than degrade.
 - 2048-bit `modPow` in JavaScript takes a few milliseconds. If it ever feels slow
   in the browser, drop to the RFC 3526 1024-bit group; the protocol is unchanged.
 - Do not let a route handler default to the edge runtime.

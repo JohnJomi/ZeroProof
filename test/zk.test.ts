@@ -11,7 +11,13 @@ import {
   bytesToBigInt,
 } from "../lib/zk/bigint.ts";
 import { sha256ToBigInt } from "../lib/zk/hash.ts";
-import { deriveSecret, publicKey, prove, verify } from "../lib/zk/schnorr.ts";
+import {
+  deriveSecret,
+  publicKey,
+  prove,
+  verify,
+  MAX_HEX_DIGITS,
+} from "../lib/zk/schnorr.ts";
 import { registry, SCHNORR_DLOG_V1 } from "../lib/zk/scheme.ts";
 
 const SALT = "0123456789abcdef0123456789abcdef";
@@ -202,24 +208,22 @@ test("5. out-of-range t rejects before any exponentiation", async () => {
   const y = publicKey(x);
   const proof = await prove(x, y, NONCE_A, SUBJECT);
 
-  for (const t of [0n, 1n, p, p + 1n, p * 2n]) {
+  // Values that fit the encoding bound but fail the mathematical range check.
+  // (Anything wider than MAX_HEX_DIGITS is refused earlier — see test 5e.)
+  for (const t of [0n, 1n, p, p + 1n]) {
     const result = await verify({ ...proof, t: bigIntToHex(t) }, y, NONCE_A, SUBJECT);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "t_out_of_range", `t = ${t} should be rejected by range check`);
   }
 
-  // The range check must fire before modPow is reached: a t far larger than p
-  // returns immediately rather than exponentiating a huge value.
-  const started = process.hrtime.bigint();
-  const huge = await verify(
-    { ...proof, t: bigIntToHex(p ** 3n) },
-    y,
-    NONCE_A,
-    SUBJECT,
-  );
-  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-  assert.equal(huge.reason, "t_out_of_range");
-  assert.ok(elapsedMs < 5, `range check should short-circuit, took ${elapsedMs}ms`);
+  // A t far larger than p is refused on its encoding, before any conversion or
+  // exponentiation: p^3 needs more than MAX_HEX_DIGITS digits.
+  const huge = await verify({ ...proof, t: bigIntToHex(p ** 3n) }, y, NONCE_A, SUBJECT);
+  assert.equal(huge.reason, "malformed_proof");
+
+  // A t that is in-encoding but still out of range is caught by the range check.
+  const justOver = await verify({ ...proof, t: bigIntToHex(p + 1n) }, y, NONCE_A, SUBJECT);
+  assert.equal(justOver.reason, "t_out_of_range");
 });
 
 test("5b. out-of-range s and y reject", async () => {
@@ -255,6 +259,68 @@ test("5c. malformed proofs return a failure instead of throwing", async () => {
     const result = await verify(proof, y, NONCE_A, SUBJECT);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "malformed_proof");
+  }
+});
+
+test("5d. y = p - 1 is rejected as a subgroup violation", async () => {
+  const x = await deriveSecret(SALT, "correct horse battery staple");
+  const honestY = publicKey(x);
+  const proof = await prove(x, honestY, NONCE_A, SUBJECT);
+
+  // p - 1 passes 1 < y < p but has order 2, not q.
+  const rogue = p - 1n;
+  assert.ok(rogue > 1n && rogue < p, "p-1 clears the plain range check");
+  assert.notEqual(modPow(rogue, q, p), 1n, "p-1 is genuinely outside the subgroup");
+
+  const result = await verify(proof, rogue, NONCE_A, SUBJECT);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "y_not_in_subgroup");
+
+  // Every small-order element is refused the same way.
+  for (const badY of [p - 1n, modPow(g, q, p) * (p - 1n) % p]) {
+    if (badY <= 1n || badY >= p) continue;
+    assert.equal((await verify(proof, badY, NONCE_A, SUBJECT)).ok, false);
+  }
+
+  // An honest y is in the subgroup and still verifies.
+  assert.equal(modPow(honestY, q, p), 1n);
+  assert.equal((await verify(proof, honestY, NONCE_A, SUBJECT)).ok, true);
+});
+
+test("5e. oversized encodings are rejected before conversion", async () => {
+  const x = await deriveSecret(SALT, "correct horse battery staple");
+  const y = publicKey(x);
+  const proof = await prove(x, y, NONCE_A, SUBJECT);
+
+  assert.equal(MAX_HEX_DIGITS, 512, "p is 2048 bits, so 512 hex digits is the ceiling");
+
+  const tooLong = "f".repeat(MAX_HEX_DIGITS + 1);
+  const enormous = "f".repeat(100_000);
+  for (const bad of [tooLong, enormous]) {
+    assert.equal((await verify({ ...proof, t: bad }, y, NONCE_A, SUBJECT)).reason, "malformed_proof");
+    assert.equal((await verify({ ...proof, s: bad }, y, NONCE_A, SUBJECT)).reason, "malformed_proof");
+  }
+
+  // Exactly at the limit is an encoding the validator accepts; it is then
+  // rejected on its value, proving the bound is not off by one.
+  const atLimit = "f".repeat(MAX_HEX_DIGITS);
+  assert.equal(atLimit.length, MAX_HEX_DIGITS);
+  assert.equal((await verify({ ...proof, t: atLimit }, y, NONCE_A, SUBJECT)).reason, "t_out_of_range");
+});
+
+test("5f. malformed hex is rejected without throwing", async () => {
+  const x = await deriveSecret(SALT, "correct horse battery staple");
+  const y = publicKey(x);
+  const proof = await prove(x, y, NONCE_A, SUBJECT);
+
+  // Note "0x…" and whitespace are accepted by hexToBigInt but are not canonical
+  // on the wire, so verify() refuses them.
+  const malformed = ["", " ", "0x1f", " 1f ", "1f ", "zz", "12g4", "-1", "1.5", "١٢٣", "1f\n"];
+  for (const bad of malformed) {
+    const viaT = await verify({ ...proof, t: bad }, y, NONCE_A, SUBJECT);
+    const viaS = await verify({ ...proof, s: bad }, y, NONCE_A, SUBJECT);
+    assert.equal(viaT.reason, "malformed_proof", `t = ${JSON.stringify(bad)}`);
+    assert.equal(viaS.reason, "malformed_proof", `s = ${JSON.stringify(bad)}`);
   }
 });
 

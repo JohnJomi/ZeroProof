@@ -86,6 +86,23 @@ export async function prove(
 }
 
 /**
+ * The widest legal encoding: `p` is 2048 bits, so no in-range value needs more
+ * than 512 hex digits. Anything longer is rejected before it is ever converted,
+ * so an attacker cannot hand us a megabyte-long string to parse.
+ */
+export const MAX_HEX_DIGITS = 512;
+
+/** Canonical, bounded, non-empty hex — checked before any BigInt conversion. */
+function isValidHexEncoding(value: string): boolean {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_HEX_DIGITS &&
+    /^[0-9a-fA-F]+$/.test(value)
+  );
+}
+
+/**
  * Check `g^s ≡ t · y^c (mod p)`.
  *
  * Every range check happens before any exponentiation, so a malformed or
@@ -101,6 +118,12 @@ export async function verify(
     return { ok: false, reason: "malformed_proof" };
   }
 
+  // 1. Validate the encodings before converting anything.
+  if (!isValidHexEncoding(proof.t) || !isValidHexEncoding(proof.s)) {
+    return { ok: false, reason: "malformed_proof" };
+  }
+
+  // 2. Convert. Both strings are now known to be short, canonical hex.
   let t: bigint;
   let s: bigint;
   try {
@@ -110,10 +133,16 @@ export async function verify(
     return { ok: false, reason: "malformed_proof" };
   }
 
-  // Range checks first — no exponentiation until these pass.
+  // 3. Mathematical range checks — still before any exponentiation.
   if (t <= 1n || t >= p) return { ok: false, reason: "t_out_of_range" };
   if (s < 0n || s >= q) return { ok: false, reason: "s_out_of_range" };
   if (y <= 1n || y >= p) return { ok: false, reason: "y_out_of_range" };
+
+  // 4. Subgroup membership. A range check alone admits values such as p - 1,
+  //    which has order 2 rather than q: without this, a forged proof against a
+  //    small-order y could be accepted. This is the first exponentiation, and
+  //    it runs only on inputs already known to be well-formed and in range.
+  if (modPow(y, q, p) !== 1n) return { ok: false, reason: "y_not_in_subgroup" };
 
   const c = await challenge(y, t, nonce, subject);
   const lhs = modPow(g, s, p);

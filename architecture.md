@@ -63,7 +63,7 @@ serves prover and verifier.
 
 The secret never leaves the browser.
 
-```
+```text
 client                                            server
   │  salt ← random 16 bytes
   │  x    ← SHA256(salt ‖ secret) mod q          (private, discarded after use)
@@ -79,7 +79,7 @@ problem in a 2048-bit group — computationally infeasible.
 
 ### 3.2 Proof of knowledge
 
-```
+```text
 client                                            server
   ├── GET /api/challenge?username=alice ─────────▶
   │                                               nonce ← random 128 bits
@@ -103,7 +103,7 @@ client                                            server
 
 **Completeness.** For an honest prover,
 
-```
+```text
 g^s = g^(k + c·x) = g^k · (g^x)^c = t · y^c   (mod p)
 ```
 
@@ -127,7 +127,7 @@ value that perfectly masks `x`.
 
 ## 4. Component architecture
 
-```
+```text
 ┌─────────────────────── Browser ────────────────────────┐
 │  UI (Next.js App Router)                               │
 │    Register · Prove · Audit                            │
@@ -189,11 +189,41 @@ UI are untouched.
 
 | Threat | Defence |
 |---|---|
-| Server database breach | The store holds only `y`; recovering the secret is a discrete-log problem. |
+| Server database breach | The store holds only `y` and `salt`, never the secret or `x`. Inverting `y` directly is a discrete-log problem. **This does not stop offline guessing — see the note below.** |
 | Passive network eavesdropper | Transcripts are simulatable, so they reveal nothing about the secret. |
 | Replay of a captured proof | Each proof is bound to a server-issued nonce that is single-use and expires in 60 s. Consumption is an atomic conditional `UPDATE`, so a replay loses the race rather than being caught by a check-then-act. |
 | Tampering with a proof in transit | Any modification to `t` or `s` breaks the verification equation. |
 | Forging a proof without the secret | Requires solving discrete log or inverting SHA-256. |
+
+**Offline dictionary attack after a database breach**
+
+The registration salt is stored alongside `y`, and both the parameters and the
+derivation are public. An attacker who steals the database can therefore test
+candidate secrets entirely offline, with no further interaction with the server:
+
+```text
+for each guess:  x' ← SHA256(salt ‖ guess) mod q
+                 if g^x' mod p == y  then guess is the secret
+```
+
+The per-user salt prevents one precomputed table from covering every account,
+but it does nothing to slow a targeted search: each attempt costs a single
+SHA-256 and one modular exponentiation, and the derivation is deliberately not
+memory- or CPU-hard.
+
+So the honest statement of the property is narrower than "a breach reveals
+nothing". Discrete-log hardness protects the commitment from **direct
+inversion** — it does not protect a **low-entropy secret from being guessed**.
+A human-chosen password in a wordlist falls to this attack quickly.
+
+**ZeroProof therefore requires high-entropy secrets** — a long random
+passphrase or generated key, not a memorable password. With a genuinely
+high-entropy secret the search space is infeasible and the breach yields
+nothing; with a weak one, `y` behaves much like an unsalted-but-fast password
+hash. Closing this gap properly means an augmented PAKE such as OPAQUE, which is
+outside the teaching scope of this system; a production design would at minimum
+replace SHA-256 with a memory-hard KDF (scrypt, Argon2) to raise the per-guess
+cost.
 
 **Explicitly out of scope**
 
