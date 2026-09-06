@@ -15,5 +15,5 @@
     "paths": { "@/*": ["./*"] },
     "baseUrl": "."
   },
-  "include": ["lib/**/*.ts", "test/**/*.ts"]
+  "include": ["lib/**/*.ts", "test/**/*.ts", "app/**/*.ts"]
 }
