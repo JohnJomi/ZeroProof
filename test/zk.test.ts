@@ -16,6 +16,7 @@ import {
   publicKey,
   prove,
   verify,
+  validatePublicKey,
   MAX_HEX_DIGITS,
 } from "../lib/zk/schnorr.ts";
 import { registry, SCHNORR_DLOG_V1 } from "../lib/zk/scheme.ts";
@@ -321,6 +322,28 @@ test("5f. malformed hex is rejected without throwing", async () => {
     const viaS = await verify({ ...proof, s: bad }, y, NONCE_A, SUBJECT);
     assert.equal(viaT.reason, "malformed_proof", `t = ${JSON.stringify(bad)}`);
     assert.equal(viaS.reason, "malformed_proof", `s = ${JSON.stringify(bad)}`);
+  }
+});
+
+test("validatePublicKey enforces range then subgroup membership", async () => {
+  const honestY = publicKey(await deriveSecret(SALT, "correct horse battery staple"));
+  assert.deepEqual(validatePublicKey(honestY), { ok: true });
+  assert.deepEqual(validatePublicKey(modPow(g, 12345n, p)), { ok: true });
+
+  for (const y of [0n, 1n, -1n, p, p + 1n]) {
+    assert.deepEqual(validatePublicKey(y), { ok: false, reason: "y_out_of_range" }, `y = ${y}`);
+  }
+
+  // In range, wrong order: p - 1 has order 2.
+  assert.deepEqual(validatePublicKey(p - 1n), { ok: false, reason: "y_not_in_subgroup" });
+
+  // verify() reports exactly what the validator says, so the two cannot drift.
+  const proof = await prove(await deriveSecret(SALT, "s"), honestY, NONCE_A, SUBJECT);
+  for (const y of [p - 1n, p + 1n, 1n]) {
+    const fromVerify = await verify(proof, y, NONCE_A, SUBJECT);
+    const fromValidator = validatePublicKey(y);
+    assert.equal(fromVerify.ok, false);
+    assert.equal(fromVerify.reason, fromValidator.ok === false ? fromValidator.reason : undefined);
   }
 });
 
