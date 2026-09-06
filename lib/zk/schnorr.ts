@@ -102,6 +102,24 @@ function isValidHexEncoding(value: string): boolean {
   );
 }
 
+/** Why a public key was refused. */
+export type PublicKeyValidity =
+  | { ok: true }
+  | { ok: false; reason: "y_out_of_range" | "y_not_in_subgroup" };
+
+/**
+ * The public-key rules, in one place so the verifier and the registration path
+ * cannot drift apart.
+ *
+ * A plain range check is not enough: `p - 1` satisfies `1 < y < p` but has
+ * order 2 rather than `q`, so it is not a member of the intended subgroup.
+ */
+export function validatePublicKey(y: bigint): PublicKeyValidity {
+  if (y <= 1n || y >= p) return { ok: false, reason: "y_out_of_range" };
+  if (modPow(y, q, p) !== 1n) return { ok: false, reason: "y_not_in_subgroup" };
+  return { ok: true };
+}
+
 /**
  * Check `g^s ≡ t · y^c (mod p)`.
  *
@@ -136,13 +154,12 @@ export async function verify(
   // 3. Mathematical range checks — still before any exponentiation.
   if (t <= 1n || t >= p) return { ok: false, reason: "t_out_of_range" };
   if (s < 0n || s >= q) return { ok: false, reason: "s_out_of_range" };
-  if (y <= 1n || y >= p) return { ok: false, reason: "y_out_of_range" };
 
-  // 4. Subgroup membership. A range check alone admits values such as p - 1,
-  //    which has order 2 rather than q: without this, a forged proof against a
-  //    small-order y could be accepted. This is the first exponentiation, and
-  //    it runs only on inputs already known to be well-formed and in range.
-  if (modPow(y, q, p) !== 1n) return { ok: false, reason: "y_not_in_subgroup" };
+  // 4. Public key: range, then subgroup membership. The subgroup test is the
+  //    first exponentiation, and it runs only on inputs already known to be
+  //    well-formed and in range.
+  const key = validatePublicKey(y);
+  if (!key.ok) return { ok: false, reason: key.reason };
 
   const c = await challenge(y, t, nonce, subject);
   const lhs = modPow(g, s, p);

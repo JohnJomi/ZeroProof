@@ -6,9 +6,8 @@
  * delegated to `lib/zk`; none of it is reimplemented.
  */
 
-import { p, q } from "../../lib/zk/params.ts";
-import { modPow, hexToBigInt } from "../../lib/zk/bigint.ts";
-import { MAX_HEX_DIGITS } from "../../lib/zk/schnorr.ts";
+import { hexToBigInt } from "../../lib/zk/bigint.ts";
+import { MAX_HEX_DIGITS, validatePublicKey } from "../../lib/zk/schnorr.ts";
 
 /** Stable, machine-readable reasons. The UI and tests match on these. */
 export type Reason =
@@ -75,20 +74,15 @@ export function isValidHex(value: unknown, maxDigits = MAX_HEX_DIGITS): value is
 /**
  * The Phase 1 public-key rules, applied at registration.
  *
- * `verify()` already enforces exactly this on every proof, so a bad `y` could
- * never authenticate — this rejects it at the door instead of storing a key
- * that can only ever fail. Built from the same `p`, `q` and `modPow` the
- * verifier uses; the protocol is not reimplemented here.
+ * The rules themselves live in `lib/zk/schnorr.ts` and are shared with
+ * `verify()`; this only decodes the hex before handing the value over, so the
+ * two paths cannot drift apart.
  */
 export function isValidPublicKey(yHex: string): boolean {
   if (!isValidHex(yHex)) return false;
-  let y: bigint;
   try {
-    y = hexToBigInt(yHex);
+    return validatePublicKey(hexToBigInt(yHex)).ok;
   } catch {
     return false;
   }
-  if (y <= 1n || y >= p) return false;
-  // Subgroup membership: p - 1 clears the range check but has order 2.
-  return modPow(y, q, p) === 1n;
 }
