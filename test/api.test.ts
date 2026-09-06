@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { p, q, g } from "../lib/zk/params.ts";
 import { modPow, bigIntToHex } from "../lib/zk/bigint.ts";
-import { deriveSecret, publicKey, prove } from "../lib/zk/schnorr.ts";
+import { deriveSecret, publicKey, prove, MAX_HEX_DIGITS } from "../lib/zk/schnorr.ts";
 import { SCHNORR_DLOG_V1 } from "../lib/zk/scheme.ts";
 
 // The store is a module-level singleton keyed off ZEROPROOF_DB, so the path
@@ -331,6 +331,79 @@ test("a failed proof still consumes the nonce", async () => {
   );
   assert.equal(retry.verified as unknown as boolean, false);
   assert.equal(retry.reason as unknown as string, "nonce_invalid");
+});
+
+test("oversized t or s is rejected 400 and does not consume the nonce", async () => {
+  const username = uniqueUser("oversize");
+  const { x, y } = await enrol(username);
+
+  const issued = await body(await get(challenge, `http://t/api/challenge?username=${username}`));
+  const nonce = issued.nonce as unknown as string;
+  const proof = await prove(x, y, nonce, username);
+
+  const tooLong = "f".repeat(MAX_HEX_DIGITS + 1);
+  const enormous = "a".repeat(200_000);
+
+  for (const [label, payload] of Object.entries({
+    "oversized t": { username, nonce, t: tooLong, s: proof.s },
+    "oversized s": { username, nonce, t: proof.t, s: tooLong },
+    "enormous t": { username, nonce, t: enormous, s: proof.s },
+    "enormous s": { username, nonce, t: proof.t, s: enormous },
+  })) {
+    const response = await post(verifyRoute, "http://t/api/verify", payload);
+    assert.equal(response.status, 400, label);
+    assert.equal((await body(response)).reason as unknown as string, "malformed_request", label);
+    assert.equal(
+      getStore().getChallenge(nonce)?.consumed,
+      0,
+      `${label} must not consume the nonce`,
+    );
+  }
+
+  // Nothing was logged for a request rejected before it reached the verifier.
+  const entries = (await body(await get(log, "http://t/api/log")))
+    .entries as unknown as { username: string }[];
+  assert.equal(entries.filter((e) => e.username === username).length, 0);
+
+  // The nonce survived intact and the honest proof still works.
+  const ok = await body(
+    await post(verifyRoute, "http://t/api/verify", { username, nonce, t: proof.t, s: proof.s }),
+  );
+  assert.equal(ok.verified as unknown as boolean, true);
+});
+
+test("non-hex t or s is rejected 400 and does not consume the nonce", async () => {
+  const username = uniqueUser("nonhex");
+  const { x, y } = await enrol(username);
+
+  const issued = await body(await get(challenge, `http://t/api/challenge?username=${username}`));
+  const nonce = issued.nonce as unknown as string;
+  const proof = await prove(x, y, nonce, username);
+
+  for (const bad of ["", "zz", "0x1f", " 1f ", "12g4", "-1", "1.5"]) {
+    for (const payload of [
+      { username, nonce, t: bad, s: proof.s },
+      { username, nonce, t: proof.t, s: bad },
+    ]) {
+      const response = await post(verifyRoute, "http://t/api/verify", payload);
+      assert.equal(response.status, 400, JSON.stringify(bad));
+      assert.equal((await body(response)).reason as unknown as string, "malformed_request");
+    }
+  }
+  assert.equal(getStore().getChallenge(nonce)?.consumed, 0, "nonce must survive");
+
+  // A t exactly at the ceiling is well-formed, so it is allowed through and
+  // rejected on its value instead — proving the bound is not off by one.
+  const atLimit = "f".repeat(MAX_HEX_DIGITS);
+  const response = await post(verifyRoute, "http://t/api/verify", {
+    username,
+    nonce,
+    t: atLimit,
+    s: proof.s,
+  });
+  assert.equal(response.status, 200, "an in-bounds encoding reaches the verifier");
+  assert.equal((await body(response)).verified as unknown as boolean, false);
+  assert.equal(getStore().getChallenge(nonce)?.consumed, 1, "and that attempt burns the nonce");
 });
 
 test("verify rejects malformed shapes without touching the database", async () => {

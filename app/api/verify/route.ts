@@ -35,7 +35,10 @@ export async function POST(request: Request): Promise<Response> {
   const { username, nonce, t, s } = body;
   if (!isValidUsername(username)) return fail("invalid_username", 400);
   if (!isValidHex(nonce, 64)) return fail("malformed_request", 400);
-  if (typeof t !== "string" || typeof s !== "string") return fail("malformed_request", 400);
+  // Bounded canonical hex, using the same MAX_HEX_DIGITS ceiling the verifier
+  // applies. Rejecting here means an oversized proof never reaches — and never
+  // burns — a valid nonce.
+  if (!isValidHex(t) || !isValidHex(s)) return fail("malformed_request", 400);
 
   const store = getStore();
 
