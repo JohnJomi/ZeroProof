@@ -179,12 +179,19 @@ export async function requestChallenge(username: string): Promise<ChallengeRespo
  * Returns the verdict alongside the body that went over the wire, so the UI can
  * show exactly what was transmitted.
  */
+export type ProofStage = "challenge" | "generating" | "generated" | "verifying";
+
 export async function proveKnowledge(
   username: string,
   secret: string,
+  onStage?: (stage: ProofStage) => void,
 ): Promise<{ sent: VerifyBody; result: VerifyResponse; expiresAt: number }> {
+  onStage?.("challenge");
   const challenge = await requestChallenge(username);
+  onStage?.("generating");
   const sent = await buildVerifyBody(username, secret, challenge.salt, challenge.nonce);
+  onStage?.("generated");
+  onStage?.("verifying");
   const payload = await postJson("/api/verify", sent);
   return {
     sent,

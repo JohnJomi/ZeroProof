@@ -1,12 +1,13 @@
 "use client";
 
 /**
- * The interactive demo: Register, Prove, Audit, Privacy.
+ * The ZeroProof application.
  *
  * The secret lives in React state and nowhere else — no localStorage, no
- * cookies, no URL parameters, never in a request body. Every request this
- * component sends is built by `lib/client.ts`, which is the only code that
- * touches the secret, and which discards `x` as soon as the proof is made.
+ * cookies, no URL parameters, never in a request body. Every request is built
+ * by `lib/client.ts`, the only module that touches the secret.
+ *
+ * This file is presentation only; the protocol lives in lib/zk and lib/client.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -17,53 +18,46 @@ import {
   validateCredentials,
   ApiError,
   SCHEME,
-  type CredentialProblem,
+  type ProofStage,
   type RegisterBody,
   type VerifyBody,
   type VerifyResponse,
   type LogEntry,
+  type CredentialProblem,
 } from "../lib/client.ts";
+import { Tick, Cross, Lock, Device, Server, Ledger, ArrowRight } from "./icons.tsx";
 
-type Tab = "register" | "prove" | "audit" | "privacy";
+type Tab = "register" | "prove" | "audit";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "register", label: "Register" },
   { id: "prove", label: "Prove" },
-  { id: "audit", label: "Audit" },
-  { id: "privacy", label: "Privacy" },
+  { id: "audit", label: "Audit log" },
 ];
 
-/** Long hex is unreadable in full; show the ends. */
-function abbreviate(hex: string, keep = 16): string {
-  return hex.length <= keep * 2 ? hex : `${hex.slice(0, keep)}…${hex.slice(-keep)}`;
-}
-
-/** Stable server reasons rendered as something a person can act on. */
 const PROBLEM_TEXT: Record<CredentialProblem, string> = {
   missing_username: "Enter a username.",
   missing_secret: "Enter your secret.",
 };
 
+/** Stable server reasons rendered as something a person can act on. */
 const REASON_TEXT: Record<string, string> = {
   username_taken: "That username is already registered. Pick a different one.",
   invalid_username: "Usernames may contain only letters, digits, and . _ - @",
   invalid_public_key: "The generated public key was rejected. Please try again.",
   unsupported_scheme: "This build does not support the requested proof scheme.",
-  unknown_user: "No such user. Register that username first.",
+  unknown_user: "No such user yet. Register that username first.",
   nonce_invalid: "The challenge expired or was already used. Try again.",
-  verification_failed: "The proof did not check out — the secret does not match.",
+  verification_failed: "The proof did not check out — that secret does not match.",
   malformed_request: "The request was rejected as malformed.",
   internal_error: "The server hit an internal error. Please try again.",
 };
 
-/** Every failure path the UI can hit, turned into a useful message. */
 function messageFor(error: unknown): string {
   if (error instanceof ApiError) {
     return REASON_TEXT[error.reason] ?? `Request failed (${error.status}): ${error.reason}`;
   }
   if (error instanceof Error) {
-    // Web Crypto is absent outside a secure context — the usual cause is
-    // opening the app over plain http on a LAN address instead of localhost.
     if (error.message.includes("Web Crypto")) {
       return (
         "Web Crypto is unavailable, so no proof can be generated. " +
@@ -78,20 +72,118 @@ function messageFor(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+/** Long hex is unreadable in full; show the ends. */
+const abbreviate = (hex: string, keep = 10) =>
+  hex.length <= keep * 2 ? hex : `${hex.slice(0, keep)}…${hex.slice(-keep)}`;
+
+/* ------------------------------------------------------------------ pipeline */
+
+type StageState = "idle" | "active" | "done" | "fail";
+
+const PIPELINE: { key: ProofStage | "verified"; name: string; where: string }[] = [
+  { key: "challenge", name: "Challenge issued", where: "server" },
+  { key: "generating", name: "Proof generated", where: "this device" },
+  { key: "verifying", name: "Proof sent for checking", where: "network" },
+  { key: "verified", name: "Signature verified", where: "server" },
+];
+
+/** Where the flow has reached, so each row can show idle / active / done. */
+function stageStates(stage: ProofStage | "verified" | null, failed: boolean) {
+  const order = ["challenge", "generating", "verifying", "verified"];
+  const reached = stage === null ? -1 : order.indexOf(stage === "generated" ? "generating" : stage);
+  return PIPELINE.map((row, i): StageState => {
+    if (reached < 0) return "idle";
+    if (i < reached) return "done";
+    if (i === reached) return failed ? "fail" : stage === "verified" ? "done" : "active";
+    return "idle";
+  });
+}
+
+function Pipeline({ stage, failed }: { stage: ProofStage | "verified" | null; failed: boolean }) {
+  const states = stageStates(stage, failed);
+  return (
+    <ol className="pipeline">
+      {PIPELINE.map((row, i) => (
+        <li key={row.key} className={`stage stage-${states[i]}`}>
+          <span className="dot" aria-hidden="true" />
+          <span>
+            <span className="stage-name">{row.name}</span>
+            <br />
+            <span className="stage-where">{row.where}</span>
+          </span>
+          <span className="stage-where">
+            {states[i] === "done" ? "done" : states[i] === "active" ? "working" : states[i] === "fail" ? "failed" : ""}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/* ------------------------------------------------------------ secret field */
+
+function SecretField({
+  id,
+  value,
+  onChange,
+  visible,
+  onToggle,
+  inputRef,
+  placeholder,
+  autoComplete,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  visible: boolean;
+  onToggle: () => void;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  placeholder: string;
+  autoComplete: string;
+}) {
+  return (
+    <div className="field">
+      <label htmlFor={id}>Secret</label>
+      <div className="input-row">
+        <input
+          id={id}
+          ref={inputRef}
+          type={visible ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete={autoComplete}
+          placeholder={placeholder}
+        />
+        <button
+          type="button"
+          className="reveal"
+          onClick={onToggle}
+          aria-pressed={visible}
+          aria-label={visible ? "Hide secret" : "Show secret"}
+        >
+          {visible ? "Hide" : "Show"}
+        </button>
+      </div>
+      <p className="field-note">Used on this device only. It is never sent.</p>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------- page */
+
 export default function ZeroProofDemo() {
   const [tab, setTab] = useState<Tab>("register");
 
   // The secret is component state only. It is never persisted anywhere.
   const [username, setUsername] = useState("");
   const [secret, setSecret] = useState("");
-  // Masked by default; toggled only in memory, never persisted.
   const [secretVisible, setSecretVisible] = useState(false);
 
   // Read as a fallback on submit. React state is the source of truth, but if
-  // anything writes to the input without firing onChange — browser autofill, a
-  // password manager, a bundle that failed to hydrate — the state goes stale
-  // while the field looks filled. Reading the element directly means the user
-  // gets a real attempt or a real error, never a dead button.
+  // anything writes to the input without firing onChange — autofill, a password
+  // manager, a bundle that failed to hydrate — the state goes stale while the
+  // field looks filled. Reading the element directly means the user always gets
+  // a real attempt or a real error, never a dead button.
   const regUserRef = useRef<HTMLInputElement>(null);
   const regSecretRef = useRef<HTMLInputElement>(null);
   const proveUserRef = useRef<HTMLInputElement>(null);
@@ -102,6 +194,7 @@ export default function ZeroProofDemo() {
   const [registerError, setRegisterError] = useState<string | null>(null);
 
   const [proving, setProving] = useState(false);
+  const [stage, setStage] = useState<ProofStage | "verified" | null>(null);
   const [proof, setProof] = useState<{ sent: VerifyBody; result: VerifyResponse } | null>(null);
   const [proveError, setProveError] = useState<string | null>(null);
 
@@ -109,15 +202,14 @@ export default function ZeroProofDemo() {
   const [loadingLog, setLoadingLog] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
 
-  /**
-   * The submit buttons are gated only on a request being in flight. Emptiness
-   * is reported on submit instead of disabling the control: a disabled button
-   * cannot tell the user what is wrong.
-   */
   const readInputs = (
     userRef: React.RefObject<HTMLInputElement | null>,
     secretRef: React.RefObject<HTMLInputElement | null>,
-  ) => validateCredentials(username || userRef.current?.value || "", secret || secretRef.current?.value || "");
+  ) =>
+    validateCredentials(
+      username || userRef.current?.value || "",
+      secret || secretRef.current?.value || "",
+    );
 
   const loadLog = useCallback(async () => {
     setLoadingLog(true);
@@ -146,7 +238,7 @@ export default function ZeroProofDemo() {
     setRegisterError(null);
     setRegistered(null);
     try {
-      // Salt, x and y are all computed in the browser; only y and salt are sent.
+      // Salt, x and y are all computed here; only y and salt are sent.
       setRegistered(await register(input.username, input.secret));
     } catch (error) {
       setRegisterError(messageFor(error));
@@ -165,8 +257,11 @@ export default function ZeroProofDemo() {
     setProving(true);
     setProveError(null);
     setProof(null);
+    setStage(null);
     try {
-      const { sent, result } = await proveKnowledge(input.username, input.secret);
+      const { sent, result } = await proveKnowledge(input.username, input.secret, setStage);
+      // The proof did reach the server either way; it is the final check that failed.
+      setStage("verified");
       setProof({ sent, result });
     } catch (error) {
       setProveError(messageFor(error));
@@ -175,272 +270,279 @@ export default function ZeroProofDemo() {
     }
   }
 
+  const statusWord = proving
+    ? stage === "challenge"
+      ? "Requesting challenge"
+      : stage === "verifying"
+        ? "Verifying"
+        : "Generating proof"
+    : proof
+      ? proof.result.verified
+        ? "Verified"
+        : "Verification failed"
+      : "Ready";
+
   return (
     <>
-      <div className="tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="app-head">
+        <div className="tabs" role="tablist" aria-label="ZeroProof sections">
+          {TABS.map((t) => (
+            <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {/* ------------------------------------------------------- register */}
       {tab === "register" && (
-        <section className="panel">
-          <h2>Register</h2>
-          <p className="hint">
-            The browser generates a random salt, derives <code>x = SHA256(salt ‖ secret) mod q</code>,
-            and sends only the commitment <code>y = g^x mod p</code>. Your secret never leaves this page.
-          </p>
-          <form onSubmit={onRegister}>
-            <div className="field">
-              <label htmlFor="reg-user">Username</label>
-              <input
-                id="reg-user"
-                ref={regUserRef}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="off"
-                placeholder="alice"
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="reg-secret">Secret</label>
-              <div className="secret-row">
-                <input
+        <div className="work">
+          <div className="card card-lift">
+            <div className="centred-action">
+              <span className="label label-accent">Step one</span>
+              <h2 style={{ marginTop: "0.9rem" }}>Create a commitment</h2>
+              <p className="muted" style={{ fontSize: "var(--t-small)", marginBottom: "2rem" }}>
+                Your browser derives a public commitment from your secret and sends only that.
+                The secret itself stays here.
+              </p>
+
+              <form onSubmit={onRegister} noValidate>
+                <div className="field">
+                  <label htmlFor="reg-user">Username</label>
+                  <input
+                    id="reg-user"
+                    ref={regUserRef}
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    autoComplete="off"
+                    placeholder="alice"
+                  />
+                </div>
+                <SecretField
                   id="reg-secret"
-                  ref={regSecretRef}
-                  type={secretVisible ? "text" : "password"}
                   value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
+                  onChange={setSecret}
+                  visible={secretVisible}
+                  onToggle={() => setSecretVisible((v) => !v)}
+                  inputRef={regSecretRef}
                   autoComplete="new-password"
                   placeholder="a long, high-entropy passphrase"
                 />
-                <button
-                  type="button"
-                  className="reveal"
-                  onClick={() => setSecretVisible((v) => !v)}
-                  aria-pressed={secretVisible}
-                  aria-label={secretVisible ? "Hide secret" : "Show secret"}
-                >
-                  {secretVisible ? "Hide" : "Show"}
+                <button className="btn btn-accent btn-lg btn-block" type="submit" disabled={registering}>
+                  {registering ? "Creating commitment…" : "Register"}
                 </button>
-              </div>
-            </div>
-            <button className="action" type="submit" disabled={registering}>
-              {registering ? "Registering…" : "Register"}
-            </button>
-          </form>
+              </form>
 
-          {registerError && (
-            <div className="status bad">
-              <span className="verdict">Registration failed</span>
-              <code>{registerError}</code>
-            </div>
-          )}
+              {registerError && (
+                <div className="banner banner-bad" role="alert">
+                  <Cross className="banner-icon" />
+                  <div>
+                    <h3>Registration failed</h3>
+                    <p>{registerError}</p>
+                  </div>
+                </div>
+              )}
 
-          {registered && (
-            <div className="status ok">
-              <span className="verdict">Registered</span>
-              This exact JSON was sent — inspect it, there is no secret in it.
-              <pre className="trunc">
+              {registered && (
+                <div className="banner banner-ok">
+                  <Tick className="banner-icon" />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <h3>Registered</h3>
+                    <p>This is the entire request that was sent. There is no secret in it.</p>
+                    <pre className="payload" style={{ marginTop: "0.85rem" }}>
 {JSON.stringify(
-  { ...registered, y: abbreviate(registered.y, 24) },
+  { username: registered.username, scheme: registered.scheme,
+    salt: abbreviate(registered.salt), y: abbreviate(registered.y) },
   null,
   2,
 )}
-              </pre>
+                    </pre>
+                    <button className="btn btn-ghost" style={{ marginTop: "1rem" }} onClick={() => setTab("prove")}>
+                      Now prove it <ArrowRight className="tick" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </section>
+          </div>
+          <Assurances />
+        </div>
       )}
 
+      {/* ---------------------------------------------------------- prove */}
       {tab === "prove" && (
-        <section className="panel">
-          <h2>Prove knowledge</h2>
-          <p className="hint">
-            Fetches a single-use nonce, re-derives <code>x</code> from the stored salt and your
-            typed secret, and builds a Schnorr proof in the browser. Only <code>t</code> and{" "}
-            <code>s</code> are transmitted.
-          </p>
-          <form onSubmit={onProve}>
-            <div className="field">
-              <label htmlFor="prove-user">Username</label>
-              <input
-                id="prove-user"
-                ref={proveUserRef}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="off"
-                placeholder="alice"
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="prove-secret">Secret</label>
-              <div className="secret-row">
-                <input
-                  id="prove-secret"
-                  ref={proveSecretRef}
-                  type={secretVisible ? "text" : "password"}
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  autoComplete="off"
-                  placeholder="type the wrong one to see it rejected"
-                />
-                <button
-                  type="button"
-                  className="reveal"
-                  onClick={() => setSecretVisible((v) => !v)}
-                  aria-pressed={secretVisible}
-                  aria-label={secretVisible ? "Hide secret" : "Show secret"}
-                >
-                  {secretVisible ? "Hide" : "Show"}
-                </button>
-              </div>
-            </div>
-            <button className="action" type="submit" disabled={proving}>
-              {proving ? "Proving…" : "Prove knowledge"}
-            </button>
-          </form>
-
-          {proveError && (
-            <div className="status bad">
-              <span className="verdict">Could not complete</span>
-              <code>{proveError}</code>
-            </div>
-          )}
-
-          {proof && (
-            <div className={`status ${proof.result.verified ? "ok" : "bad"}`}>
-              <span className="verdict">
-                {proof.result.verified ? "✓ Verified" : "✗ Not verified"}
+        <div className="work">
+          <div className="card card-lift">
+            <div className="centred-action">
+              <span className={`label ${proof && !proof.result.verified ? "label-fail" : "label-accent"}`}>
+                {statusWord}
               </span>
-              reason: <code>{proof.result.reason}</code>
-              <pre className="trunc">
+              <h2 style={{ marginTop: "0.9rem" }}>Prove your secret</h2>
+              <p className="muted" style={{ fontSize: "var(--t-small)", marginBottom: "2rem" }}>
+                Your secret never leaves this device. Type the wrong one to watch the server
+                turn it down.
+              </p>
+
+              <form onSubmit={onProve} noValidate>
+                <div className="field">
+                  <label htmlFor="prove-user">Username</label>
+                  <input
+                    id="prove-user"
+                    ref={proveUserRef}
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    autoComplete="off"
+                    placeholder="alice"
+                  />
+                </div>
+                <SecretField
+                  id="prove-secret"
+                  value={secret}
+                  onChange={setSecret}
+                  visible={secretVisible}
+                  onToggle={() => setSecretVisible((v) => !v)}
+                  inputRef={proveSecretRef}
+                  autoComplete="off"
+                  placeholder="your secret"
+                />
+                <button className="btn btn-accent btn-lg btn-block" type="submit" disabled={proving}>
+                  {proving ? "Generating proof…" : "Generate proof"}
+                </button>
+              </form>
+
+              {(proving || proof) && (
+                <div style={{ marginTop: "1.75rem" }}>
+                  <span className="label">Progress</span>
+                  <div style={{ marginTop: "0.6rem" }}>
+                    <Pipeline stage={stage} failed={Boolean(proof && !proof.result.verified)} />
+                  </div>
+                </div>
+              )}
+
+              {proveError && (
+                <div className="banner banner-bad" role="alert">
+                  <Cross className="banner-icon" />
+                  <div>
+                    <h3>Could not complete</h3>
+                    <p>{proveError}</p>
+                  </div>
+                </div>
+              )}
+
+              {proof && (
+                <div className={`banner ${proof.result.verified ? "banner-ok" : "banner-bad"}`} role="status">
+                  {proof.result.verified ? <Tick className="banner-icon" /> : <Cross className="banner-icon" />}
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <h3>{proof.result.verified ? "Verified" : "Not verified"}</h3>
+                    <p>
+                      {proof.result.verified
+                        ? "Knowledge successfully proven without revealing the secret."
+                        : REASON_TEXT[proof.result.reason] ?? proof.result.reason}
+                    </p>
+                    <pre className="payload" style={{ marginTop: "0.85rem" }}>
 {JSON.stringify(
-  {
-    username: proof.sent.username,
-    scheme: proof.sent.scheme,
-    nonce: proof.sent.nonce,
-    t: abbreviate(proof.sent.t),
-    s: abbreviate(proof.sent.s),
-  },
+  { username: proof.sent.username, nonce: abbreviate(proof.sent.nonce),
+    t: abbreviate(proof.sent.t), s: abbreviate(proof.sent.s) },
   null,
   2,
 )}
-              </pre>
+                    </pre>
+                    <button className="btn btn-ghost" style={{ marginTop: "1rem" }} onClick={() => setTab("audit")}>
+                      {proof.result.verified ? "See the audit log" : "Try again, then see the log"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </section>
+          </div>
+          <Assurances />
+        </div>
       )}
 
+      {/* ---------------------------------------------------------- audit */}
       {tab === "audit" && (
-        <section className="panel">
-          <h2>Verification log</h2>
-          <p className="hint">The 20 most recent verification attempts recorded by the server.</p>
-          <div className="row">
-            <button className="action secondary" onClick={loadLog} disabled={loadingLog}>
+        <div className="card card-lift">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div>
+              <span className="label">Server record</span>
+              <h2 style={{ fontSize: "var(--t-h2)", marginTop: "0.6rem" }}>Audit log</h2>
+              <p className="muted" style={{ fontSize: "var(--t-small)", marginTop: "0.4rem" }}>
+                The last twenty verification attempts. Outcomes only — no secrets, no proofs.
+              </p>
+            </div>
+            <button className="btn btn-ghost" onClick={loadLog} disabled={loadingLog}>
               {loadingLog ? "Refreshing…" : "Refresh"}
             </button>
           </div>
 
           {logError && (
-            <div className="status bad">
-              <code>{logError}</code>
+            <div className="banner banner-bad" role="alert">
+              <Cross className="banner-icon" />
+              <div><h3>Could not load the log</h3><p>{logError}</p></div>
             </div>
           )}
 
           {!logError && log.length === 0 && !loadingLog && (
-            <p className="muted" style={{ marginTop: 16 }}>
-              No verification attempts yet.
-            </p>
+            <div className="empty">
+              <Ledger />
+              <p>No verification attempts yet. Prove a secret and it will appear here.</p>
+            </div>
           )}
 
           {log.length > 0 && (
-            <div className="table-scroll" style={{ marginTop: 16 }}>
+            <div className="table-wrap" style={{ marginTop: "1.75rem" }}>
               <table>
                 <thead>
-                  <tr>
-                    <th>User</th>
-                    <th>Scheme</th>
-                    <th>Result</th>
-                    <th>Reason</th>
-                    <th>When</th>
-                  </tr>
+                  <tr><th>User</th><th>Result</th><th>Reason</th><th>Scheme</th><th>Time</th></tr>
                 </thead>
                 <tbody>
                   {log.map((entry) => (
                     <tr key={entry.id}>
                       <td>{entry.username}</td>
-                      <td><code>{entry.scheme}</code></td>
                       <td>
-                        <span className={`pill ${entry.verified ? "ok" : "bad"}`}>
-                          {entry.verified ? "verified" : "rejected"}
+                        <span className={`verdict ${entry.verified ? "verdict-ok" : "verdict-bad"}`}>
+                          {entry.verified ? "Verified" : "Rejected"}
                         </span>
                       </td>
-                      <td><code>{entry.reason ?? "—"}</code></td>
-                      <td>{new Date(entry.at).toLocaleTimeString()}</td>
+                      <td className="muted">{entry.reason ?? "—"}</td>
+                      <td className="mono muted">{entry.scheme}</td>
+                      <td className="muted">{new Date(entry.at).toLocaleTimeString()}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
-        </section>
-      )}
-
-      {tab === "privacy" && (
-        <section className="panel privacy">
-          <h2>What is sent to the server?</h2>
-          <p className="hint">
-            Open DevTools → Network and run the flow. The secret appears in no request body.
-          </p>
-          <ul>
-            <li>
-              <strong>The secret stays in the browser.</strong> It is held in page memory only —
-              <span className="never"> never</span> written to localStorage, cookies, the URL, or
-              any server-side store.
-            </li>
-            <li>
-              <strong>Registration sends the public key and salt, not the secret.</strong> The
-              browser computes <code>x = SHA256(salt ‖ secret) mod q</code> and sends only{" "}
-              <code>y = g^x mod p</code>. Recovering <code>x</code> from <code>y</code> is the
-              discrete logarithm problem in a 2048-bit group.
-            </li>
-            <li>
-              <strong>Verification sends the proof, not the secret.</strong> The browser picks a
-              fresh random <code>k</code>, sends <code>t = g^k</code> and{" "}
-              <code>s = k + c·x</code>. Because <code>k</code> is fresh and uniform,{" "}
-              <code>s</code> perfectly masks <code>x</code>.
-            </li>
-            <li>
-              <strong>The server verifies without receiving the secret.</strong> It checks{" "}
-              <code>g^s ≡ t · y^c (mod p)</code>. It learns only that the proof holds — a
-              transcript it could have simulated by itself.
-            </li>
-          </ul>
-
-          <div className="wire">
-            <div>
-              <h4>Sent on register</h4>
-              <pre>{JSON.stringify({ username: "alice", scheme: SCHEME, salt: "…", y: "…" }, null, 2)}</pre>
-            </div>
-            <div>
-              <h4>Sent on verify</h4>
-              <pre>{JSON.stringify({ username: "alice", scheme: SCHEME, nonce: "…", t: "…", s: "…" }, null, 2)}</pre>
-            </div>
-          </div>
-          <p className="muted" style={{ marginTop: 14, fontSize: 13 }}>
-            Note: a stolen database still allows offline guessing of a weak secret, so ZeroProof
-            requires a high-entropy passphrase. See <code>architecture.md</code> §6.
-          </p>
-        </section>
+        </div>
       )}
     </>
+  );
+}
+
+/* --------------------------------------------------------- side assurances */
+
+function Assurances() {
+  return (
+    <aside className="aside">
+      <div className="aside-card">
+        <h3>What happens on this device</h3>
+        <ul className="assurances">
+          <li><Tick />Secret remains local</li>
+          <li><Tick />Proof generated in browser</li>
+          <li><Tick />Server verifies proof only</li>
+        </ul>
+      </div>
+      <div className="aside-card">
+        <h3>What crosses the network</h3>
+        <ul className="assurances">
+          <li><Device className="tick" />On register — a salt and a public commitment</li>
+          <li><Server className="tick" />On prove — a single-use proof transcript</li>
+          <li><Lock className="tick" />Never — the secret, in any form</li>
+        </ul>
+        <p className="field-note" style={{ marginTop: "1rem" }}>
+          Open DevTools → Network and run the flow. Scheme <code>{SCHEME}</code>.
+        </p>
+      </div>
+    </aside>
   );
 }
