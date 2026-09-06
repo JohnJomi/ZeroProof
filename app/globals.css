@@ -108,3 +108,13 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
 @media (max-width: 640px) { .wire { grid-template-columns: 1fr; } }
 .wire h4 { margin: 0 0 6px; font-size: 13px; }
 .muted { color: var(--muted); }
+
+.secret-row { display: flex; gap: 8px; align-items: stretch; }
+.secret-row input { flex: 1; min-width: 0; }
+button.reveal {
+  appearance: none; background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0 14px;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+button.reveal:hover { color: var(--text); }
+button.reveal[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }

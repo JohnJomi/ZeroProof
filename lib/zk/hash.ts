@@ -3,7 +3,7 @@
  * no `node:crypto` here.
  */
 
-import { bytesToBigInt, webcrypto } from "./bigint.ts";
+import { bytesToBigInt, getWebCrypto } from "./bigint.ts";
 
 /**
  * SHA-256 of the ordered concatenation of `parts` (UTF-8), as a big-endian
@@ -15,6 +15,6 @@ import { bytesToBigInt, webcrypto } from "./bigint.ts";
  */
 export async function sha256ToBigInt(...parts: string[]): Promise<bigint> {
   const bytes = new TextEncoder().encode(parts.join(""));
-  const digest = await webcrypto.subtle.digest("SHA-256", bytes);
+  const digest = await getWebCrypto().subtle.digest("SHA-256", bytes);
   return bytesToBigInt(new Uint8Array(digest));
 }

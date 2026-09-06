@@ -17,6 +17,8 @@ import {
   randomSalt,
   buildRegisterBody,
   buildVerifyBody,
+  register,
+  ApiError,
   SCHEME,
 } from "../lib/client.ts";
 
@@ -94,6 +96,72 @@ test("a wrong secret produces a proof that does not verify", async () => {
   const y = publicKey(await deriveSecret(salt, SECRET));
   const body = await buildVerifyBody(USERNAME, "the wrong secret", salt, nonce);
   assert.equal((await verify({ t: body.t, s: body.s }, y, nonce, USERNAME)).ok, false);
+});
+
+// ------------------------------------------- regression: browser bundle safety
+
+test("the crypto core loads without crypto.subtle and fails only at use", async () => {
+  // A browser outside a secure context (plain http on a LAN address) exposes
+  // getRandomValues but not subtle. A module-scope throw there would kill the
+  // whole client bundle before React mounts, leaving a dead page that cannot
+  // even report the problem. The check must therefore be lazy and catchable.
+  const real = globalThis.crypto;
+  Object.defineProperty(globalThis, "crypto", {
+    value: { getRandomValues: real.getRandomValues.bind(real) },
+    configurable: true,
+  });
+  try {
+    // Fresh module graph, so module-scope code runs under the stub.
+    const url = new URL("../lib/client.ts", import.meta.url).href + `?probe=${Date.now()}`;
+    const fresh = (await import(url)) as typeof import("../lib/client.ts");
+
+    await assert.rejects(
+      () => fresh.buildRegisterBody("alice", SECRET),
+      /Web Crypto/,
+      "must fail at the point of use, with a catchable error",
+    );
+  } finally {
+    Object.defineProperty(globalThis, "crypto", { value: real, configurable: true });
+  }
+});
+
+test("register() surfaces API failures as ApiError with the server reason", async () => {
+  const calls: { url: string; body: string }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init: { body?: string } | undefined) => {
+    calls.push({ url: String(input), body: String(init?.body) });
+    return registerRoute(new Request("http://local" + String(input), init as RequestInit));
+  }) as typeof fetch;
+
+  try {
+    const username = `dup-${Date.now()}`;
+    const body = await register(username, SECRET);
+    assert.deepEqual(Object.keys(body).sort(), ["salt", "scheme", "username", "y"]);
+
+    // The same username again must reject as a typed 409, not resolve silently.
+    await assert.rejects(
+      () => register(username, SECRET),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 409);
+        assert.equal(error.reason, "username_taken");
+        return true;
+      },
+    );
+
+    // Both requests went to the right place and carried no secret.
+    assert.ok(calls.every((c) => c.url === "/api/register"));
+    const wire = calls.map((c) => c.body).join("\n");
+    assert.ok(!wire.includes(SECRET));
+    for (const call of calls) {
+      assert.deepEqual(
+        Object.keys(JSON.parse(call.body)).sort(),
+        ["salt", "scheme", "username", "y"],
+      );
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 // ------------------------------------------------- full flow through the API

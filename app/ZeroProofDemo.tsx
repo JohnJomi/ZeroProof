@@ -36,8 +36,40 @@ function abbreviate(hex: string, keep = 16): string {
   return hex.length <= keep * 2 ? hex : `${hex.slice(0, keep)}…${hex.slice(-keep)}`;
 }
 
-const messageFor = (error: unknown): string =>
-  error instanceof ApiError ? error.reason : "network_error";
+/** Stable server reasons rendered as something a person can act on. */
+const REASON_TEXT: Record<string, string> = {
+  username_taken: "That username is already registered. Pick a different one.",
+  invalid_username: "Usernames may contain only letters, digits, and . _ - @",
+  invalid_public_key: "The generated public key was rejected. Please try again.",
+  unsupported_scheme: "This build does not support the requested proof scheme.",
+  unknown_user: "No such user. Register that username first.",
+  nonce_invalid: "The challenge expired or was already used. Try again.",
+  verification_failed: "The proof did not check out — the secret does not match.",
+  malformed_request: "The request was rejected as malformed.",
+  internal_error: "The server hit an internal error. Please try again.",
+};
+
+/** Every failure path the UI can hit, turned into a useful message. */
+function messageFor(error: unknown): string {
+  if (error instanceof ApiError) {
+    return REASON_TEXT[error.reason] ?? `Request failed (${error.status}): ${error.reason}`;
+  }
+  if (error instanceof Error) {
+    // Web Crypto is absent outside a secure context — the usual cause is
+    // opening the app over plain http on a LAN address instead of localhost.
+    if (error.message.includes("Web Crypto")) {
+      return (
+        "Web Crypto is unavailable, so no proof can be generated. " +
+        "Open this page over https, or on http://localhost."
+      );
+    }
+    if (error.name === "TypeError") {
+      return "Could not reach the server. Check that it is running and try again.";
+    }
+    return error.message;
+  }
+  return "Something went wrong. Please try again.";
+}
 
 export default function ZeroProofDemo() {
   const [tab, setTab] = useState<Tab>("register");
@@ -45,6 +77,8 @@ export default function ZeroProofDemo() {
   // The secret is component state only. It is never persisted anywhere.
   const [username, setUsername] = useState("");
   const [secret, setSecret] = useState("");
+  // Masked by default; toggled only in memory, never persisted.
+  const [secretVisible, setSecretVisible] = useState(false);
 
   const [registering, setRegistering] = useState(false);
   const [registered, setRegistered] = useState<RegisterBody | null>(null);
@@ -142,14 +176,25 @@ export default function ZeroProofDemo() {
             </div>
             <div className="field">
               <label htmlFor="reg-secret">Secret</label>
-              <input
-                id="reg-secret"
-                type="password"
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                autoComplete="new-password"
-                placeholder="a long, high-entropy passphrase"
-              />
+              <div className="secret-row">
+                <input
+                  id="reg-secret"
+                  type={secretVisible ? "text" : "password"}
+                  value={secret}
+                  onChange={(e) => setSecret(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="a long, high-entropy passphrase"
+                />
+                <button
+                  type="button"
+                  className="reveal"
+                  onClick={() => setSecretVisible((v) => !v)}
+                  aria-pressed={secretVisible}
+                  aria-label={secretVisible ? "Hide secret" : "Show secret"}
+                >
+                  {secretVisible ? "Hide" : "Show"}
+                </button>
+              </div>
             </div>
             <button className="action" type="submit" disabled={!canRegister}>
               {registering ? "Registering…" : "Register"}
@@ -200,14 +245,25 @@ export default function ZeroProofDemo() {
             </div>
             <div className="field">
               <label htmlFor="prove-secret">Secret</label>
-              <input
-                id="prove-secret"
-                type="password"
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                autoComplete="off"
-                placeholder="type the wrong one to see it rejected"
-              />
+              <div className="secret-row">
+                <input
+                  id="prove-secret"
+                  type={secretVisible ? "text" : "password"}
+                  value={secret}
+                  onChange={(e) => setSecret(e.target.value)}
+                  autoComplete="off"
+                  placeholder="type the wrong one to see it rejected"
+                />
+                <button
+                  type="button"
+                  className="reveal"
+                  onClick={() => setSecretVisible((v) => !v)}
+                  aria-pressed={secretVisible}
+                  aria-label={secretVisible ? "Hide secret" : "Show secret"}
+                >
+                  {secretVisible ? "Hide" : "Show"}
+                </button>
+              </div>
             </div>
             <button className="action" type="submit" disabled={!canProve}>
               {proving ? "Proving…" : "Prove knowledge"}
