@@ -18,6 +18,7 @@ import {
   buildRegisterBody,
   buildVerifyBody,
   register,
+  validateCredentials,
   ApiError,
   SCHEME,
 } from "../lib/client.ts";
@@ -96,6 +97,33 @@ test("a wrong secret produces a proof that does not verify", async () => {
   const y = publicKey(await deriveSecret(salt, SECRET));
   const body = await buildVerifyBody(USERNAME, "the wrong secret", salt, nonce);
   assert.equal((await verify({ t: body.t, s: body.s }, y, nonce, USERNAME)).ok, false);
+});
+
+// ---------------------------------------- regression: input gating on the form
+
+test("validateCredentials accepts any non-empty secret, whatever its length", () => {
+  // The regression: the Register button was gated on this check, so anything
+  // that made it fail left a dead control the user could not act on. It must
+  // impose no length requirement — the protocol hashes a secret of any size.
+  for (const secret of ["x", "hunter2", "correct horse battery staple correct horse!!", "y".repeat(500)]) {
+    assert.deepEqual(
+      validateCredentials("alice", secret),
+      { ok: true, username: "alice", secret },
+      `a ${secret.length}-character secret must be accepted`,
+    );
+  }
+
+  // Usernames are trimmed; secrets are not, since spaces may be part of them.
+  assert.deepEqual(validateCredentials("  alice  ", " s "), {
+    ok: true,
+    username: "alice",
+    secret: " s ",
+  });
+
+  // Only genuine emptiness is refused, and it says which field.
+  assert.deepEqual(validateCredentials("", "s"), { ok: false, problem: "missing_username" });
+  assert.deepEqual(validateCredentials("   ", "s"), { ok: false, problem: "missing_username" });
+  assert.deepEqual(validateCredentials("alice", ""), { ok: false, problem: "missing_secret" });
 });
 
 // ------------------------------------------- regression: browser bundle safety

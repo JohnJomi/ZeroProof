@@ -9,13 +9,15 @@
  * touches the secret, and which discards `x` as soon as the proof is made.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   register,
   proveKnowledge,
   fetchLog,
+  validateCredentials,
   ApiError,
   SCHEME,
+  type CredentialProblem,
   type RegisterBody,
   type VerifyBody,
   type VerifyResponse,
@@ -37,6 +39,11 @@ function abbreviate(hex: string, keep = 16): string {
 }
 
 /** Stable server reasons rendered as something a person can act on. */
+const PROBLEM_TEXT: Record<CredentialProblem, string> = {
+  missing_username: "Enter a username.",
+  missing_secret: "Enter your secret.",
+};
+
 const REASON_TEXT: Record<string, string> = {
   username_taken: "That username is already registered. Pick a different one.",
   invalid_username: "Usernames may contain only letters, digits, and . _ - @",
@@ -80,6 +87,16 @@ export default function ZeroProofDemo() {
   // Masked by default; toggled only in memory, never persisted.
   const [secretVisible, setSecretVisible] = useState(false);
 
+  // Read as a fallback on submit. React state is the source of truth, but if
+  // anything writes to the input without firing onChange — browser autofill, a
+  // password manager, a bundle that failed to hydrate — the state goes stale
+  // while the field looks filled. Reading the element directly means the user
+  // gets a real attempt or a real error, never a dead button.
+  const regUserRef = useRef<HTMLInputElement>(null);
+  const regSecretRef = useRef<HTMLInputElement>(null);
+  const proveUserRef = useRef<HTMLInputElement>(null);
+  const proveSecretRef = useRef<HTMLInputElement>(null);
+
   const [registering, setRegistering] = useState(false);
   const [registered, setRegistered] = useState<RegisterBody | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
@@ -92,8 +109,15 @@ export default function ZeroProofDemo() {
   const [loadingLog, setLoadingLog] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
 
-  const canRegister = username.trim() !== "" && secret !== "" && !registering;
-  const canProve = username.trim() !== "" && secret !== "" && !proving;
+  /**
+   * The submit buttons are gated only on a request being in flight. Emptiness
+   * is reported on submit instead of disabling the control: a disabled button
+   * cannot tell the user what is wrong.
+   */
+  const readInputs = (
+    userRef: React.RefObject<HTMLInputElement | null>,
+    secretRef: React.RefObject<HTMLInputElement | null>,
+  ) => validateCredentials(username || userRef.current?.value || "", secret || secretRef.current?.value || "");
 
   const loadLog = useCallback(async () => {
     setLoadingLog(true);
@@ -113,12 +137,17 @@ export default function ZeroProofDemo() {
 
   async function onRegister(event: React.FormEvent) {
     event.preventDefault();
+    const input = readInputs(regUserRef, regSecretRef);
+    if (!input.ok) {
+      setRegisterError(PROBLEM_TEXT[input.problem]);
+      return;
+    }
     setRegistering(true);
     setRegisterError(null);
     setRegistered(null);
     try {
       // Salt, x and y are all computed in the browser; only y and salt are sent.
-      setRegistered(await register(username.trim(), secret));
+      setRegistered(await register(input.username, input.secret));
     } catch (error) {
       setRegisterError(messageFor(error));
     } finally {
@@ -128,11 +157,16 @@ export default function ZeroProofDemo() {
 
   async function onProve(event: React.FormEvent) {
     event.preventDefault();
+    const input = readInputs(proveUserRef, proveSecretRef);
+    if (!input.ok) {
+      setProveError(PROBLEM_TEXT[input.problem]);
+      return;
+    }
     setProving(true);
     setProveError(null);
     setProof(null);
     try {
-      const { sent, result } = await proveKnowledge(username.trim(), secret);
+      const { sent, result } = await proveKnowledge(input.username, input.secret);
       setProof({ sent, result });
     } catch (error) {
       setProveError(messageFor(error));
@@ -168,6 +202,7 @@ export default function ZeroProofDemo() {
               <label htmlFor="reg-user">Username</label>
               <input
                 id="reg-user"
+                ref={regUserRef}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="off"
@@ -179,6 +214,7 @@ export default function ZeroProofDemo() {
               <div className="secret-row">
                 <input
                   id="reg-secret"
+                  ref={regSecretRef}
                   type={secretVisible ? "text" : "password"}
                   value={secret}
                   onChange={(e) => setSecret(e.target.value)}
@@ -196,7 +232,7 @@ export default function ZeroProofDemo() {
                 </button>
               </div>
             </div>
-            <button className="action" type="submit" disabled={!canRegister}>
+            <button className="action" type="submit" disabled={registering}>
               {registering ? "Registering…" : "Register"}
             </button>
           </form>
@@ -237,6 +273,7 @@ export default function ZeroProofDemo() {
               <label htmlFor="prove-user">Username</label>
               <input
                 id="prove-user"
+                ref={proveUserRef}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="off"
@@ -248,6 +285,7 @@ export default function ZeroProofDemo() {
               <div className="secret-row">
                 <input
                   id="prove-secret"
+                  ref={proveSecretRef}
                   type={secretVisible ? "text" : "password"}
                   value={secret}
                   onChange={(e) => setSecret(e.target.value)}
@@ -265,7 +303,7 @@ export default function ZeroProofDemo() {
                 </button>
               </div>
             </div>
-            <button className="action" type="submit" disabled={!canProve}>
+            <button className="action" type="submit" disabled={proving}>
               {proving ? "Proving…" : "Prove knowledge"}
             </button>
           </form>

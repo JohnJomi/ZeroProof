@@ -54,6 +54,28 @@ export interface LogEntry {
   at: number;
 }
 
+/** Why the typed credentials were refused, before any request is built. */
+export type CredentialProblem = "missing_username" | "missing_secret";
+
+export type CredentialCheck =
+  | { ok: true; username: string; secret: string }
+  | { ok: false; problem: CredentialProblem };
+
+/**
+ * The only rule the UI enforces on input: both fields must be non-empty.
+ *
+ * The protocol imposes no minimum secret length — `deriveSecret` hashes
+ * whatever it is given — so no length requirement is invented here. The
+ * username is trimmed because surrounding space is always a typo; the secret is
+ * never trimmed, because leading or trailing space is legitimately part of it.
+ */
+export function validateCredentials(username: string, secret: string): CredentialCheck {
+  const trimmed = username.trim();
+  if (trimmed === "") return { ok: false, problem: "missing_username" };
+  if (secret === "") return { ok: false, problem: "missing_secret" };
+  return { ok: true, username: trimmed, secret };
+}
+
 /** A fresh 128-bit salt from the browser CSPRNG. */
 export function randomSalt(): string {
   const bytes = new Uint8Array(SALT_BYTES);
