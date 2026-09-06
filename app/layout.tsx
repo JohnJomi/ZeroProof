@@ -1,10 +1,11 @@
-/** Minimal App Router root layout. The Phase 4 UI replaces this shell. */
+/** Minimal App Router root layout. */
 
 import type { ReactNode } from "react";
+import "./globals.css";
 
 export const metadata = {
   title: "ZeroProof",
-  description: "Zero-knowledge proof of knowledge of a secret",
+  description: "Prove knowledge of a secret without ever sending it",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
