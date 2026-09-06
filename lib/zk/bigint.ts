@@ -6,12 +6,25 @@
  * same code runs in the browser (prover) and in Node (verifier).
  */
 
-/** Web Crypto, resolved the same way in browsers and in the Node runtime. */
-const webcrypto: Crypto = globalThis.crypto;
-if (!webcrypto?.getRandomValues || !webcrypto?.subtle) {
-  throw new Error("Web Crypto (crypto.getRandomValues / crypto.subtle) is unavailable");
+/**
+ * Web Crypto, resolved the same way in browsers and in the Node runtime.
+ *
+ * Looked up per call rather than at module load. A module-scope throw here
+ * would take down the whole bundle before any caller could catch it — in a
+ * browser that means a dead page with no way to report the problem. Failing at
+ * the point of use keeps the error catchable and displayable.
+ *
+ * Browsers expose `crypto.subtle` only in a secure context, so this is
+ * genuinely absent when the app is served over plain http from anything other
+ * than localhost.
+ */
+export function getWebCrypto(): Crypto {
+  const webcrypto: Crypto | undefined = globalThis.crypto;
+  if (!webcrypto?.getRandomValues || !webcrypto?.subtle) {
+    throw new Error("Web Crypto (crypto.getRandomValues / crypto.subtle) is unavailable");
+  }
+  return webcrypto;
 }
-export { webcrypto };
 
 /**
  * `base ** exponent mod modulus` by square-and-multiply.
@@ -53,7 +66,7 @@ export function randomBigIntBelow(bound: bigint): bigint {
   const buf = new Uint8Array(bytes);
 
   for (;;) {
-    webcrypto.getRandomValues(buf);
+    getWebCrypto().getRandomValues(buf);
     const candidate = bytesToBigInt(buf) >> excessBits;
     if (candidate < bound) return candidate;
   }
